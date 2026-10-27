@@ -1,0 +1,309 @@
+<Page
+  x:Class="VoWin.Views.Pages.DashboardPage"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+  xmlns:helpers="clr-namespace:VoWin.Helpers"
+  xmlns:local="clr-namespace:VoWin.Views.Pages"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+  Title="首页"
+  d:DataContext="{d:DesignInstance local:DashboardPage, IsDesignTimeCreatable=False}"
+  ui:Design.Background="{DynamicResource ApplicationBackgroundBrush}"
+  ui:Design.Foreground="{DynamicResource AppTextPrimaryBrush}"
+  Foreground="{DynamicResource AppTextPrimaryBrush}"
+  mc:Ignorable="d"
+>
+  <Page.Resources>
+    <helpers:BoolToVisibilityConverter x:Key="BoolToVis" />
+    <helpers:BoolToVisibilityConverter x:Key="InvertBoolToVis" Invert="True" />
+    <helpers:IntGreaterOrEqualConverter x:Key="StepReached" />
+    <helpers:MaskedIdentifierConverter x:Key="MaskId" />
+    <Style x:Key="FieldLabel" TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource AppTextTertiaryBrush}" />
+      <Setter Property="FontSize" Value="11.5" />
+      <Setter Property="Margin" Value="0,4,0,2" />
+    </Style>
+    <Style x:Key="FieldValue" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="13.5" />
+      <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+    </Style>
+    <Style x:Key="PanelCard" TargetType="Border">
+      <Setter Property="Background" Value="{DynamicResource AppCardBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppCardBorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="12" />
+      <Setter Property="Padding" Value="16,14" />
+    </Style>
+    <Style x:Key="PanelTitle" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="15" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Margin" Value="0,0,0,2" />
+    </Style>
+    <Style x:Key="PanelHint" TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource AppTextTertiaryBrush}" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Margin" Value="0,0,0,8" />
+    </Style>
+    <Style x:Key="StepDot" TargetType="Ellipse">
+      <Setter Property="Width" Value="10" />
+      <Setter Property="Height" Value="10" />
+      <Setter Property="Fill" Value="{DynamicResource AppDividerBrush}" />
+    </Style>
+    <Style x:Key="StepText" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="11.5" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextTertiaryBrush}" />
+    </Style>
+  </Page.Resources>
+
+  <ScrollViewer Padding="20,16,20,26" VerticalScrollBarVisibility="Auto">
+    <StackPanel MaxWidth="1080" Margin="0,0,0,0">
+
+      <!-- ============ A. VoWiFi 连接状态 ============ -->
+      <Border Style="{StaticResource PanelCard}" Padding="16,14">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+          </Grid.ColumnDefinitions>
+          <StackPanel Grid.Column="0">
+            <!-- 状态徽标 -->
+            <Border Padding="12,5" CornerRadius="999" HorizontalAlignment="Left" Margin="0,0,0,10"
+                    Background="{DynamicResource AppInfoSoftBrush}">
+              <Border.Style>
+                <Style TargetType="Border">
+                  <Setter Property="Background" Value="{DynamicResource AppInfoSoftBrush}" />
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding ViewModel.StatusTone}" Value="success">
+                      <Setter Property="Background" Value="{DynamicResource AppSuccessSoftBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding ViewModel.StatusTone}" Value="danger">
+                      <Setter Property="Background" Value="{DynamicResource AppDangerSoftBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding ViewModel.StatusTone}" Value="warning">
+                      <Setter Property="Background" Value="{DynamicResource AppWarningSoftBrush}" />
+                    </DataTrigger>
+                    <DataTrigger Binding="{Binding ViewModel.StatusTone}" Value="muted">
+                      <Setter Property="Background" Value="{DynamicResource AppInputBrush}" />
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Border.Style>
+              <TextBlock FontSize="12" FontWeight="SemiBold" Text="VoWiFi">
+                <TextBlock.Style>
+                  <Style TargetType="TextBlock">
+                    <Setter Property="Foreground" Value="{DynamicResource AppInfoBrush}" />
+                    <Style.Triggers>
+                      <DataTrigger Binding="{Binding ViewModel.StatusTone}" Value="success">
+                        <Setter Property="Foreground" Value="{DynamicResource AppSuccessBrush}" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding ViewModel.StatusTone}" Value="danger">
+                        <Setter Property="Foreground" Value="{DynamicResource AppDangerBrush}" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding ViewModel.StatusTone}" Value="warning">
+                        <Setter Property="Foreground" Value="{DynamicResource AppWarningBrush}" />
+                      </DataTrigger>
+                      <DataTrigger Binding="{Binding ViewModel.StatusTone}" Value="muted">
+                        <Setter Property="Foreground" Value="{DynamicResource AppTextSecondaryBrush}" />
+                      </DataTrigger>
+                    </Style.Triggers>
+                  </Style>
+                </TextBlock.Style>
+              </TextBlock>
+            </Border>
+
+            <TextBlock Text="{Binding ViewModel.StatusTitle, Mode=OneWay}" FontSize="26" FontWeight="Bold" />
+            <TextBlock Text="{Binding ViewModel.StatusDescription, Mode=OneWay}" FontSize="13.5"
+                       Foreground="{DynamicResource AppTextSecondaryBrush}" Margin="0,4,0,0" TextWrapping="Wrap" />
+
+            <!-- 失败原因突出显示 -->
+            <Border x:Name="FailureBanner" Background="{DynamicResource AppDangerSoftBrush}"
+                    CornerRadius="8" Padding="14,10" Margin="0,12,0,0"
+                    Visibility="{Binding ViewModel.IsFailed, Converter={StaticResource BoolToVis}}">
+              <StackPanel>
+                <TextBlock Text="失败原因" FontSize="12" FontWeight="SemiBold"
+                           Foreground="{DynamicResource AppDangerBrush}" Margin="0,0,0,3" />
+                <TextBlock Text="{Binding ViewModel.FailureReason, Mode=OneWay}" FontSize="13"
+                           Foreground="{DynamicResource AppTextPrimaryBrush}" TextWrapping="Wrap" />
+              </StackPanel>
+            </Border>
+
+            <!-- 连接保持时间 -->
+            <TextBlock Text="{Binding ViewModel.UptimeDisplay, Mode=OneWay}" FontSize="12.5"
+                       Foreground="{DynamicResource AppSuccessBrush}" Margin="0,10,0,0"
+                       Visibility="{Binding ViewModel.IsConnected, Converter={StaticResource BoolToVis}}" />
+
+            <!-- 四步进度指示 -->
+            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+              <StackPanel.Resources>
+                <Style x:Key="StepBar" TargetType="Rectangle">
+                  <Setter Property="Width" Value="46" />
+                  <Setter Property="Height" Value="3" />
+                  <Setter Property="RadiusX" Value="1.5" />
+                  <Setter Property="RadiusY" Value="1.5" />
+                  <Setter Property="Fill" Value="{DynamicResource AppDividerBrush}" />
+                  <Setter Property="VerticalAlignment" Value="Center" />
+                </Style>
+              </StackPanel.Resources>
+              <StackPanel Margin="0,0,0,0" VerticalAlignment="Center">
+                <Ellipse>
+                  <Ellipse.Style>
+                    <Style TargetType="Ellipse" BasedOn="{StaticResource StepDot}">
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding ViewModel.ProgressStep, Converter={StaticResource StepReached}, ConverterParameter=1}" Value="True">
+                          <Setter Property="Fill" Value="{DynamicResource AppAccentBrush}" />
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </Ellipse.Style>
+                </Ellipse>
+              </StackPanel>
+              <TextBlock Text="解析 ePDG" Style="{StaticResource StepText}" Margin="6,0,14,0" VerticalAlignment="Center" />
+              <Rectangle Style="{StaticResource StepBar}" />
+              <Ellipse>
+                  <Ellipse.Style>
+                    <Style TargetType="Ellipse" BasedOn="{StaticResource StepDot}">
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding ViewModel.ProgressStep, Converter={StaticResource StepReached}, ConverterParameter=2}" Value="True">
+                          <Setter Property="Fill" Value="{DynamicResource AppAccentBrush}" />
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </Ellipse.Style>
+                </Ellipse>
+              <TextBlock Text="身份鉴权" Style="{StaticResource StepText}" Margin="6,0,14,0" VerticalAlignment="Center" />
+              <Rectangle Style="{StaticResource StepBar}" />
+              <Ellipse>
+                  <Ellipse.Style>
+                    <Style TargetType="Ellipse" BasedOn="{StaticResource StepDot}">
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding ViewModel.ProgressStep, Converter={StaticResource StepReached}, ConverterParameter=3}" Value="True">
+                          <Setter Property="Fill" Value="{DynamicResource AppAccentBrush}" />
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </Ellipse.Style>
+                </Ellipse>
+              <TextBlock Text="安全隧道" Style="{StaticResource StepText}" Margin="6,0,14,0" VerticalAlignment="Center" />
+              <Rectangle Style="{StaticResource StepBar}" />
+              <Ellipse>
+                  <Ellipse.Style>
+                    <Style TargetType="Ellipse" BasedOn="{StaticResource StepDot}">
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding ViewModel.ProgressStep, Converter={StaticResource StepReached}, ConverterParameter=4}" Value="True">
+                          <Setter Property="Fill" Value="{DynamicResource AppAccentBrush}" />
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </Ellipse.Style>
+                </Ellipse>
+              <TextBlock Text="IMS 注册" Style="{StaticResource StepText}" Margin="6,0,0,0" VerticalAlignment="Center" />
+            </StackPanel>
+
+            <!-- 主操作按钮 -->
+            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+              <ui:Button Content="连接 VoWiFi" Appearance="Primary" FontSize="13.5" MinWidth="120"
+                         Command="{Binding ViewModel.ConnectVoWifiCommand, Mode=OneWay}"
+                         IsEnabled="{Binding ViewModel.CanStartVoWifi, Mode=OneWay}" />
+              <ui:Button Content="断开连接" FontSize="13.5" MinWidth="100" Margin="10,0,0,0"
+                         Command="{Binding ViewModel.DisconnectVoWifiCommand, Mode=OneWay}"
+                         IsEnabled="{Binding ViewModel.CanStopVoWifi, Mode=OneWay}" />
+              <ui:Button Content="重新连接" FontSize="13.5" MinWidth="100" Margin="10,0,0,0"
+                         Command="{Binding ViewModel.ReconnectVoWifiCommand, Mode=OneWay}" IsEnabled="{Binding ViewModel.CanReconnectVoWifi, Mode=OneWay}" />
+              <ui:Button Content="查看失败原因" FontSize="13.5" Margin="10,0,0,0"
+                         Visibility="{Binding ViewModel.IsFailed, Converter={StaticResource BooleanToVisibilityConverter}}"
+                         Command="{Binding ViewModel.CopyDiagnosticReportCommand, Mode=OneWay}"
+                         ToolTip="生成完整诊断报告并复制到剪贴板" />
+            <!-- 注：进度点高亮依赖 StepReached 转换器，未达标步骊保持灰色 -->
+            </StackPanel>
+          </StackPanel>
+
+          <!-- 右侧当前设备提示 -->
+          <StackPanel Grid.Column="1" VerticalAlignment="Top" Margin="24,0,0,0" MinWidth="150">
+            <TextBlock Text="当前设备" Style="{StaticResource FieldLabel}" Margin="0,0,0,2" />
+            <TextBlock Text="{Binding ViewModel.SlotDisplay, Mode=OneWay}" Style="{StaticResource FieldValue}" TextAlignment="Right" />
+            <TextBlock Text="网络状态" Style="{StaticResource FieldLabel}" Margin="0,14,0,2" />
+            <TextBlock Text="{Binding ViewModel.TelephonyStateDisplay, Mode=OneWay}" Style="{StaticResource FieldValue}" TextAlignment="Right" />
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <!-- ============ B. 当前卡片信息 ============ -->
+      <Grid Margin="0,16,0,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- B. 当前 SIM / eSIM 卡片信息 -->
+        <Border Grid.Column="0" Style="{StaticResource PanelCard}">
+          <StackPanel>
+            <TextBlock Text="当前卡片" Style="{StaticResource PanelTitle}" />
+            <TextBlock Text="显示卡的归属与鉴权信息；不确定的字段显示为未知。" Style="{StaticResource PanelHint}" />
+
+            <Border Background="{DynamicResource AppAccentSoftBrush}" CornerRadius="10" Padding="14,9" Margin="0,0,0,4">
+              <StackPanel>
+                <TextBlock Text="{Binding ViewModel.CardTitle, Mode=OneWay}" FontSize="17" FontWeight="SemiBold" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding ViewModel.SlotDisplay, Mode=OneWay}" FontSize="12"
+                           Foreground="{DynamicResource AppTextSecondaryBrush}" Margin="0,2,0,0" />
+              </StackPanel>
+            </Border>
+
+            <TextBlock Text="归属运营商（卡面 / Profile）" Style="{StaticResource FieldLabel}" />
+            <TextBlock Text="{Binding ViewModel.CarrierDisplay, Mode=OneWay}" Style="{StaticResource FieldValue}" />
+
+            <TextBlock Text="IMSI 认证网络（实际鉴权 PLMN）" Style="{StaticResource FieldLabel}" />
+            <TextBlock Text="{Binding ViewModel.ImsiNetworkDisplay, Mode=OneWay}" Style="{StaticResource FieldValue}" />
+            <TextBlock Text="此卡的 IMSI 鉴权网络与归属运营商不同（多 IMSI / 漫游卡属正常）"
+                       FontSize="11" Foreground="{DynamicResource AppWarningBrush}" Margin="0,2,0,0" TextWrapping="Wrap"
+                       Visibility="{Binding ViewModel.CarrierDiffersFromImsiNetwork, Converter={StaticResource BooleanToVisibilityConverter}}" />
+
+            <TextBlock Text="手机号码" Style="{StaticResource FieldLabel}" />
+            <Border Background="{DynamicResource AppAccentSoftBrush}" CornerRadius="8" Padding="12,8" Margin="0,0,0,4">
+              <TextBlock Text="{Binding ViewModel.PhoneNumberDisplay, Mode=OneWay}" FontSize="22" FontWeight="Bold"
+                         Foreground="{DynamicResource AppAccentBrush}" TextWrapping="Wrap" />
+            </Border>
+
+            <TextBlock Text="ICCID（悬停查看完整）" Style="{StaticResource FieldLabel}" />
+            <TextBlock Text="{Binding ViewModel.IccidDisplay, Mode=OneWay, Converter={StaticResource MaskId}}" ToolTip="{Binding ViewModel.IccidDisplay, Mode=OneWay}" Style="{StaticResource FieldValue}" FontFamily="Consolas" />
+
+            <TextBlock Text="EID（eUICC 标识，悬停查看完整）" Style="{StaticResource FieldLabel}" />
+            <TextBlock Text="{Binding ViewModel.EidDisplay, Mode=OneWay, Converter={StaticResource MaskId}}" ToolTip="{Binding ViewModel.EidDisplay, Mode=OneWay}" Style="{StaticResource FieldValue}" FontFamily="Consolas" TextWrapping="Wrap" />
+
+            <Grid Margin="0,6,0,0">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="信号强度" Grid.Column="0" Style="{StaticResource FieldLabel}" Margin="0,10,16,0" />
+              <TextBlock Text="{Binding ViewModel.SignalDisplay, Mode=OneWay}" Grid.Column="1" VerticalAlignment="Bottom" FontSize="13.5" />
+              <StackPanel Grid.Column="2" HorizontalAlignment="Right">
+                <TextBlock Text="网络注册" Style="{StaticResource FieldLabel}" Margin="16,10,0,0" />
+                <TextBlock Text="{Binding ViewModel.RegistrationDisplay, Mode=OneWay}" FontSize="13.5" />
+              </StackPanel>
+            </Grid>
+
+            <Border Background="{DynamicResource AppInputBrush}" CornerRadius="8" Padding="12,8" Margin="0,12,0,0">
+              <TextBlock Text="{Binding ViewModel.VoWifiAvailabilityDisplay, Mode=OneWay}" FontSize="12.5"
+                         Foreground="{DynamicResource AppTextSecondaryBrush}" />
+            </Border>
+          </StackPanel>
+        </Border>
+
+      </Grid>
+
+      <!-- ============ 技术详情（可展开） ============ -->
+      <Expander Header="技术详情（高级诊断）" Margin="0,16,0,0">
+        <Border Background="{DynamicResource AppInputBrush}" CornerRadius="8" Padding="14,10" Margin="4,0,4,4">
+          <StackPanel>
+            <TextBlock Text="{Binding ViewModel.TechnicalSummary, Mode=OneWay}" FontFamily="Consolas" FontSize="12"
+                       Foreground="{DynamicResource AppTextSecondaryBrush}" TextWrapping="Wrap" />
+            <ui:Button Content="复制完整诊断报告" FontSize="12" Margin="0,10,0,0" HorizontalAlignment="Left"
+                       Command="{Binding ViewModel.CopyDiagnosticReportCommand, Mode=OneWay}" />
+          </StackPanel>
+        </Border>
+      </Expander>
+
+    </StackPanel>
+  </ScrollViewer>
+</Page>

@@ -1,0 +1,442 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+
+namespace VoSharp.Sip;
+
+/// <summary>
+/// One ipsec-3gpp security mechanism offered to (or selected by) the P-CSCF.
+/// 3GPP TS 33.203 §7.2 / RFC 3329.
+/// </summary>
+/// <param name="SpiClient">SPI of the inbound SA terminating at this endpoint's protected client port.</param>
+/// <param name="SpiServer">SPI of the inbound SA terminating at this endpoint's protected server port.</param>
+/// <param name="PortClient">This endpoint's protected client port.</param>
+/// <param name="PortServer">This endpoint's protected server port; must be listening.</param>
+public sealed record SecurityProposal(
+    string IntegrityAlgorithm,
+    string EncryptionAlgorithm,
+    uint SpiClient,
+    uint SpiServer,
+    int PortClient,
+    int PortServer);
+
+/// <summary>
+/// The mechanism the P-CSCF chose, plus the exact header value to echo back in
+/// <c>Security-Verify</c>.
+/// </summary>
+public sealed record SecurityAgreement(
+    SecurityProposal Selected,
+    string VerifyValue,
+    uint PcscfClientSpi,
+    uint PcscfServerSpi,
+    int PcscfClientPort,
+    int PcscfServerPort);
+
+/// <summary>
+/// Result of evaluating a P-CSCF <c>Security-Server</c> header.  The diagnostic
+/// messages intentionally contain only mechanism metadata and validation
+/// outcomes; they never contain SPI values or complete SIP header contents.
+/// </summary>
+public sealed record SecurityAgreementEvaluation(
+    SecurityAgreement? Agreement,
+    IReadOnlyList<string> CandidateDiagnostics);
+
+/// <summary>
+/// Security agreement (sec-agree) for IMS registration.
+/// </summary>
+/// <remarks>
+/// Port naming is the usual source of confusion: <c>spi-c</c>/<c>spi-s</c> always identify
+/// inbound SAs at the endpoint advertising them. Security-Client describes the UE's two
+/// inbound SAs; Security-Server describes the P-CSCF's two inbound SAs. UE outbound traffic
+/// from <c>port-c</c> to the P-CSCF <c>port-s</c> therefore uses the P-CSCF's <c>spi-s</c>.
+/// </remarks>
+public static class SecurityAgreementBuilder
+{
+    /// <summary>Integrity algorithms offered, in preference order.</summary>
+    public static readonly string[] DefaultIntegrityAlgorithms = { "hmac-sha-1-96", "hmac-md5-96" };
+
+    /// <summary>Encryption algorithms offered, in preference order.</summary>
+    public static readonly string[] DefaultEncryptionAlgorithms = { "aes-cbc", "des-ede3-cbc", "null" };
+
+    private const string MechanismName = "ipsec-3gpp";
+
+    /// <summary>
+    /// Builds the <c>Security-Client</c> value using the default algorithm sets.
+    /// </summary>
+    public static string BuildSecurityClient(SecurityProposal proposal) =>
+        BuildSecurityClient(proposal, DefaultIntegrityAlgorithms, DefaultEncryptionAlgorithms);
+
+    /// <summary>
+    /// Builds the <c>Security-Client</c> value: one ipsec-3gpp mechanism per
+    /// integrity × encryption combination, ordered by descending q.
+    /// Some carriers (for example O2 DE) only accept a single integrity-only offer,
+    /// so the algorithm sets are caller-selectable.
+    /// </summary>
+    public static string BuildSecurityClient(
+        SecurityProposal proposal,
+        IReadOnlyList<string> integrityAlgorithms,
+        IReadOnlyList<string> encryptionAlgorithms)
+    {
+        var offers = new List<string>();
+        var index = 0;
+
+        foreach (var integrity in integrityAlgorithms)
+        {
+            foreach (var encryption in encryptionAlgorithms)
+            {
+                // Mirrors the reference implementation: the first offer is 1.000 and the rest
+                // descend from 0.998. Only the relative order matters to the P-CSCF.
+                var preference = index == 0 ? "1.000" : string.Format(CultureInfo.InvariantCulture, "0.{0:D3}", 999 - index);
+
+                offers.Add(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0};q={1};alg={2};prot=esp;mod=trans;ealg={3};spi-c={4};spi-s={5};port-c={6};port-s={7}",
+                    MechanismName,
+                    preference,
+                    integrity,
+                    encryption,
+                    FormatSpi(proposal.SpiClient),
+                    FormatSpi(proposal.SpiServer),
+                    proposal.PortClient,
+                    proposal.PortServer));
+
+                index++;
+            }
+        }
+
+        return string.Join(", ", offers);
+    }
+
+    /// <summary>TS 33.203 requires SPIs as 10-digit zero-padded decimal values.</summary>
+    public static string FormatSpi(uint spi) => spi.ToString("D10", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Parses <c>Security-Server</c>, picks the highest-q mechanism we actually offered, and
+    /// returns the value to echo in <c>Security-Verify</c>.
+    /// </summary>
+    public static SecurityAgreement? ParseSecurityServer(
+        string headerValue,
+        SecurityProposal offered,
+        IReadOnlyList<string>? offeredIntegrityAlgorithms = null,
+        IReadOnlyList<string>? offeredEncryptionAlgorithms = null) =>
+        EvaluateSecurityServer(
+            headerValue,
+            offered,
+            offeredIntegrityAlgorithms,
+            offeredEncryptionAlgorithms).Agreement;
+
+    /// <summary>
+    /// Evaluates a <c>Security-Server</c> header while retaining a safe,
+    /// shareable explanation for every accepted or rejected candidate.  This is
+    /// intended for field diagnostics when a carrier uses a non-standard or
+    /// previously unsupported IMS security agreement.
+    /// </summary>
+    public static SecurityAgreementEvaluation EvaluateSecurityServer(
+        string headerValue,
+        SecurityProposal offered,
+        IReadOnlyList<string>? offeredIntegrityAlgorithms = null,
+        IReadOnlyList<string>? offeredEncryptionAlgorithms = null)
+    {
+        var diagnostics = new List<string>();
+        if (string.IsNullOrWhiteSpace(headerValue))
+            return new(null, ["Security-Server header was empty."]);
+
+        var items = SplitHeaderValues(headerValue);
+        if (items.Count == 0)
+            return new(null, ["Security-Server contained no parseable mechanisms."]);
+
+        var candidates = new List<(double Q, SecurityAgreement Agreement)>();
+        var allowedIntegrity = offeredIntegrityAlgorithms ?? DefaultIntegrityAlgorithms;
+        var allowedEncryption = offeredEncryptionAlgorithms ?? DefaultEncryptionAlgorithms;
+
+        for (var index = 0; index < items.Count; index++)
+        {
+            var item = items[index];
+            var label = $"candidate {index + 1}";
+            var parameters = ParseMechanism(item, out var name, out var q);
+            if (parameters is null)
+            {
+                diagnostics.Add($"{label}: rejected (malformed mechanism).");
+                continue;
+            }
+            if (!name.Equals(MechanismName, StringComparison.OrdinalIgnoreCase))
+            {
+                diagnostics.Add($"{label}: ignored (mechanism={name}).");
+                continue;
+            }
+
+            // RFC 3329 defines esp/trans/null as the defaults for an
+            // ipsec-3gpp mechanism.  Some P-CSCFs (including Vodafone DE)
+            // legitimately omit one or more of these fields in
+            // Security-Server, even though they were explicit in our offer.
+            // Keep rejecting an explicitly incompatible value, but do not
+            // mistake an omitted optional value for one.
+            var hasProtocol = TryGet(parameters, "prot", out var prot);
+            prot ??= "esp";
+            if (!prot.Equals("esp", StringComparison.OrdinalIgnoreCase))
+            {
+                diagnostics.Add($"{label}: rejected (prot={prot}; expected esp).");
+                continue;
+            }
+            var hasMode = TryGet(parameters, "mod", out var mod);
+            mod ??= "trans";
+            if (!mod.Equals("trans", StringComparison.OrdinalIgnoreCase))
+            {
+                diagnostics.Add($"{label}: rejected (mod={mod}; expected trans).");
+                continue;
+            }
+
+            if (!TryGet(parameters, "alg", out var alg) ||
+                !Contains(allowedIntegrity, alg))
+            {
+                diagnostics.Add($"{label}: rejected (alg={alg ?? "missing"}; offered=[{string.Join(',', allowedIntegrity)}]).");
+                continue;
+            }
+            var hasEncryption = TryGet(parameters, "ealg", out var ealg);
+            ealg ??= "null";
+            if (!Contains(allowedEncryption, ealg))
+            {
+                diagnostics.Add($"{label}: rejected (ealg={ealg}; offered=[{string.Join(',', allowedEncryption)}]).");
+                continue;
+            }
+            alg = alg.ToLowerInvariant();
+            ealg = ealg.ToLowerInvariant();
+
+            if (!TryGetUint(parameters, "spi-c", out var pcscfClientSpi) ||
+                !TryGetUint(parameters, "spi-s", out var pcscfServerSpi) ||
+                !TryGetInt(parameters, "port-c", out var pcscfClientPort) ||
+                !TryGetInt(parameters, "port-s", out var pcscfServerPort))
+            {
+                diagnostics.Add($"{label}: rejected (missing or invalid SPI/port field).");
+                continue;
+            }
+
+            if (pcscfClientSpi < 256 || pcscfServerSpi < 256)
+            {
+                diagnostics.Add($"{label}: rejected (reserved ESP SPI value).");
+                continue;
+            }
+
+            // All four SPIs must be distinct, and the P-CSCF must not reuse ours.
+            var spis = new[] { pcscfClientSpi, pcscfServerSpi, offered.SpiClient, offered.SpiServer };
+            if (spis.Distinct().Count() != spis.Length)
+            {
+                diagnostics.Add($"{label}: rejected (P-CSCF SPI collides with another security association).");
+                continue;
+            }
+
+            if (!IsValidProtectedPort(pcscfClientPort) || !IsValidProtectedPort(pcscfServerPort) ||
+                pcscfClientPort == pcscfServerPort)
+            {
+                diagnostics.Add($"{label}: rejected (invalid or duplicate protected ports).");
+                continue;
+            }
+
+            var selected = offered with
+            {
+                IntegrityAlgorithm = alg,
+                EncryptionAlgorithm = ealg
+            };
+
+            candidates.Add((q, new SecurityAgreement(
+                Selected: selected,
+                // The reference implementation echoes the whole header value verbatim,
+                // including mechanisms we did not accept — do not rebuild it from the winner.
+                VerifyValue: string.Join(", ", items),
+                PcscfClientSpi: pcscfClientSpi,
+                PcscfServerSpi: pcscfServerSpi,
+                PcscfClientPort: pcscfClientPort,
+                PcscfServerPort: pcscfServerPort)));
+            var defaults = string.Join(',', new[]
+            {
+                hasProtocol ? null : "prot",
+                hasMode ? null : "mod",
+                hasEncryption ? null : "ealg"
+            }.Where(static value => value is not null));
+            diagnostics.Add($"{label}: compatible (q={q.ToString(CultureInfo.InvariantCulture)}; alg={alg}; ealg={ealg}; prot=esp; mod=trans; ports valid{(defaults.Length == 0 ? string.Empty : $"; defaults={defaults}")}).");
+        }
+
+        var agreement = candidates.Count == 0
+            ? null
+            : candidates.OrderByDescending(c => c.Q).First().Agreement;
+        if (agreement is null)
+            diagnostics.Add("No Security-Server candidate was compatible with Security-Client.");
+        else
+            diagnostics.Add($"Selected highest-q compatible candidate: alg={agreement.Selected.IntegrityAlgorithm}; ealg={agreement.Selected.EncryptionAlgorithm}.");
+        return new(agreement, diagnostics);
+    }
+
+    /// <summary>
+    /// Derives the IPsec keys from the AKA CK/IK.
+    /// </summary>
+    /// <remarks>
+    /// hmac-sha-1-96 needs a 20-byte key, so IK is right-padded with four zero bytes.
+    /// des-ede3-cbc needs 24 bytes: CK followed by its first 8 bytes with odd parity forced.
+    /// </remarks>
+    public static (byte[] IntegrityKey, byte[] EncryptionKey) ExpandKeys(
+        byte[] ck, byte[] ik, string integrityAlgorithm, string encryptionAlgorithm)
+    {
+        ArgumentNullException.ThrowIfNull(ck);
+        ArgumentNullException.ThrowIfNull(ik);
+        if (ck.Length != 16 || ik.Length != 16)
+            throw new ArgumentException("CK and IK must each be 16 bytes.");
+
+        byte[] integrityKey = integrityAlgorithm switch
+        {
+            "hmac-md5-96" => (byte[])ik.Clone(),
+            "hmac-sha-1-96" or "" => Concat(ik, new byte[4]),
+            _ => throw new ArgumentException($"Unsupported integrity algorithm '{integrityAlgorithm}'.")
+        };
+
+        byte[] encryptionKey = encryptionAlgorithm switch
+        {
+            "null" => Array.Empty<byte>(),
+            "aes-cbc" or "" => (byte[])ck.Clone(),
+            "des-ede3-cbc" => Concat(ck, ApplyOddParity(ck[..8])),
+            _ => throw new ArgumentException($"Unsupported encryption algorithm '{encryptionAlgorithm}'.")
+        };
+
+        return (integrityKey, encryptionKey);
+    }
+
+    /// <summary>
+    /// Pair identifier used when installing the SA. Mirrors the reference implementation:
+    /// XOR of the two SPIs, with a fixed tweak on collision.
+    /// </summary>
+    public static uint PairRequestId(uint ueSpi, uint pcscfSpi)
+    {
+        var reqid = (ueSpi ^ pcscfSpi) & 0x7fff_ffff;
+        return reqid == 0 ? 0x4000_0000 : reqid;
+    }
+
+    /// <summary>Protected ports may be anything above 1024 except the SIP defaults.</summary>
+    public static bool IsValidProtectedPort(int port) =>
+        port > 1024 && port <= 65535 && port != 5060 && port != 5061;
+
+    // ── Parsing helpers ──────────────────────────────────────────────────────
+
+    /// <summary>Splits a comma-separated header while respecting quotes and angle brackets.</summary>
+    public static List<string> SplitHeaderValues(string value)
+    {
+        var parts = new List<string>();
+        var depth = 0;
+        var inQuotes = false;
+        var builder = new StringBuilder();
+
+        foreach (var c in value)
+        {
+            switch (c)
+            {
+                case '"':
+                    inQuotes = !inQuotes;
+                    builder.Append(c);
+                    break;
+                case '<':
+                    if (!inQuotes) depth++;
+                    builder.Append(c);
+                    break;
+                case '>':
+                    if (!inQuotes) depth--;
+                    builder.Append(c);
+                    break;
+                case ',' when !inQuotes && depth == 0:
+                    parts.Add(builder.ToString().Trim());
+                    builder.Clear();
+                    break;
+                default:
+                    builder.Append(c);
+                    break;
+            }
+        }
+
+        if (builder.Length > 0)
+            parts.Add(builder.ToString().Trim());
+
+        return parts;
+    }
+
+    /// <summary>
+    /// Splits one mechanism into its parameters. Returns null when the value is not a
+    /// parameterised mechanism.
+    /// </summary>
+    private static Dictionary<string, string>? ParseMechanism(string item, out string name, out double q)
+    {
+        name = string.Empty;
+        q = 1.0;
+
+        var separator = item.IndexOf(';');
+        if (separator < 0)
+            return null;
+
+        name = item[..separator].Trim();
+
+        var parameters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var segment in item[(separator + 1)..].Split(';'))
+        {
+            if (string.IsNullOrWhiteSpace(segment))
+                continue;
+
+            var eq = segment.IndexOf('=');
+            if (eq <= 0)
+                continue;
+
+            var key = segment[..eq].Trim();
+            var value = segment[(eq + 1)..].Trim().Trim('"');
+            parameters[key] = value;
+
+            if (key.Equals("q", StringComparison.OrdinalIgnoreCase) &&
+                double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+            {
+                q = parsed;
+            }
+        }
+
+        return parameters;
+    }
+
+    private static bool TryGet(Dictionary<string, string> parameters, string key, out string value) =>
+        parameters.TryGetValue(key, out value!);
+
+    private static bool TryGetUint(Dictionary<string, string> parameters, string key, out uint value)
+    {
+        value = 0;
+        return parameters.TryGetValue(key, out var text) &&
+               uint.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+    }
+
+    private static bool TryGetInt(Dictionary<string, string> parameters, string key, out int value)
+    {
+        value = 0;
+        return parameters.TryGetValue(key, out var text) &&
+               int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+    }
+
+    private static bool Contains(IReadOnlyList<string> set, string value) =>
+        set.Any(x => x.Equals(value, StringComparison.OrdinalIgnoreCase));
+
+    private static byte[] Concat(byte[] first, byte[] second)
+    {
+        var result = new byte[first.Length + second.Length];
+        Buffer.BlockCopy(first, 0, result, 0, first.Length);
+        Buffer.BlockCopy(second, 0, result, first.Length, second.Length);
+        return result;
+    }
+
+    /// <summary>
+    /// Forces odd parity on each byte, as 3DES keying requires: the low bit is the parity bit and
+    /// must be set or cleared so the byte contains an odd number of one bits.
+    /// </summary>
+    private static byte[] ApplyOddParity(byte[] key)
+    {
+        var result = new byte[key.Length];
+        for (var i = 0; i < key.Length; i++)
+        {
+            // Clear the parity bit first — simply OR-ing 0x01 is wrong whenever the low bit is
+            // already set, which leaves the byte with an even popcount.
+            var withoutParity = key[i] & 0xFE;
+            var ones = System.Numerics.BitOperations.PopCount((uint)withoutParity);
+            result[i] = (ones & 1) == 0 ? (byte)(withoutParity | 0x01) : (byte)withoutParity;
+        }
+        return result;
+    }
+}

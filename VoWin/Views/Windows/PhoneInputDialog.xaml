@@ -1,0 +1,32 @@
+<Window x:Class="VoWin.Views.Windows.PhoneInputDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="编辑手机号"
+        Width="460" Height="250"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="{DynamicResource ApplicationBackgroundBrush}"
+        Foreground="{DynamicResource AppTextPrimaryBrush}"
+        FontFamily="Consolas, Microsoft YaHei, Segoe UI">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0" Text="设置本卡手机号"
+                   FontSize="18" FontWeight="SemiBold" Margin="0,0,0,12" />
+        <TextBlock Grid.Row="1" TextWrapping="Wrap" FontSize="12"
+                   Foreground="{DynamicResource AppTextSecondaryBrush}" Margin="0,0,0,12"
+                   Text="部分运营商/物联网卡不会下发手机号。在此手动填写，用于右侧卡片备注与拨号显示。" />
+        <TextBox Grid.Row="2" x:Name="PhoneBox" FontSize="15" Padding="6,6"
+                 ToolTip="例如 +8613800138000" />
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Bottom">
+            <Button Content="取消" Width="90" Padding="0,6" Margin="0,0,10,0"
+                    Click="Cancel_Click" />
+            <Button Content="保存" Width="90" Padding="0,6" IsDefault="True"
+                    Click="Save_Click" />
+        </StackPanel>
+    </Grid>
+</Window>

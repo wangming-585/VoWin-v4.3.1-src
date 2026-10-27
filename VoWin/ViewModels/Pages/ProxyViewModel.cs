@@ -1,0 +1,1002 @@
+using System.Collections.ObjectModel;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using System.ComponentModel;
+using System.Threading;
+using System.Windows.Data;
+using VoSharp.Common.Utils;
+using VoSharp.Kernel.Pool;
+using VoWin.Helpers;
+using VoWin.Models;
+using VoWin.Services;
+
+namespace VoWin.ViewModels.Pages
+{
+    public class EgressOptionModel
+    {
+        public const string FollowPlmnNodeId = "__FOLLOW_PLMN__";
+        public string? NodeId { get; }
+        public string DisplayName { get; }
+        public bool IsDirect => string.IsNullOrEmpty(NodeId);
+        public bool IsFollowPlmn => string.Equals(NodeId, FollowPlmnNodeId, StringComparison.Ordinal);
+
+        public EgressOptionModel(string? nodeId, string displayName)
+        {
+            NodeId = nodeId;
+            DisplayName = displayName;
+        }
+
+        public override string ToString() => DisplayName;
+    }
+
+    public partial class ProxyViewModel : ObservableObject
+    {
+        private readonly IVoKernelService _kernelService;
+
+        public ProxyViewModel ViewModel => this;
+        public ObservableCollection<ModemSlot> Slots => _kernelService.Slots;
+        public ObservableCollection<ProxyNodeModel> ProxyPresets => _kernelService.ProxyPresets;
+        public ObservableCollection<ProxyNodeModel> Presets => ProxyPresets;
+        public ObservableCollection<IccidRouteModel> IccidRoutes => _kernelService.IccidRoutes;
+        public ObservableCollection<CountryRouteModel> CountryRoutes => _kernelService.CountryRoutes;
+
+        private readonly List<CountryMeta> _allKnownCountries;
+        public ObservableCollection<CountryMeta> FilteredAvailableCountries { get; } = new();
+        public ObservableCollection<EgressOptionModel> AvailableEgressOptions { get; } = new();
+        public ObservableCollection<SimRouteCardOption> IccidCardOptions { get; } = new();
+
+        private readonly ICollectionView? _filteredCountryRoutesView;
+        public ICollectionView? FilteredCountryRoutes => _filteredCountryRoutesView;
+
+        [ObservableProperty]
+        private CountryMeta? _selectedCountryToAdd;
+
+        [ObservableProperty]
+        private string _countrySearchQuery = string.Empty;
+
+        [ObservableProperty]
+        private EgressOptionModel? _quickAddSelectedEgress;
+
+        [ObservableProperty]
+        private string _quickAddHintText = "请在上方下拉列表中选择国家/地区，或直接输入国家名/代码进行搜索。";
+
+        [ObservableProperty]
+        private string _rulesSearchQuery = string.Empty;
+
+        // ================= Modal Edit Dialog State =================
+        [ObservableProperty]
+        private bool _isEditingRoute;
+
+        [ObservableProperty]
+        private CountryRouteModel? _editingRoute;
+
+        [ObservableProperty]
+        private bool _editDialogIsDirect = true;
+
+        [ObservableProperty]
+        private bool _editDialogIsProxy;
+
+        [ObservableProperty]
+        private ProxyNodeModel? _editDialogSelectedNode;
+
+        [ObservableProperty]
+        private CountryRouteModel? _selectedCountryRoute;
+
+        [ObservableProperty]
+        private ProxyNodeModel? _selectedNodeForCountry;
+
+        [ObservableProperty]
+        private bool _isDirectRoute = true;
+
+        [ObservableProperty]
+        private bool _isProxyRoute;
+
+        [ObservableProperty]
+        private bool _hasRouteChanges;
+
+        [ObservableProperty]
+        private string _newCountryCode = string.Empty;
+
+        [ObservableProperty]
+        private string _detectedCountryHint = "请输入 2 位 ISO 国家代码 (例如: DE, FR, JP, US, CA, AU)";
+
+        [ObservableProperty]
+        private ModemSlot? _selectedSlot;
+
+        [ObservableProperty]
+        private SimRouteCardOption? _selectedIccidCard;
+
+        [ObservableProperty]
+        private EgressOptionModel? _selectedIccidEgress;
+
+        [ObservableProperty]
+        private IccidRouteModel? _selectedIccidRoute;
+
+        [ObservableProperty]
+        private ProxyNodeModel? _selectedPreset;
+
+        [ObservableProperty]
+        private string _newPresetUrl = string.Empty;
+
+        [ObservableProperty]
+        private string _newPresetName = string.Empty;
+
+        [ObservableProperty]
+        private string _newPresetProtocol = "socks5";
+
+        [ObservableProperty]
+        private string _newPresetHost = string.Empty;
+
+        [ObservableProperty]
+        private int _newPresetPort;
+
+        [ObservableProperty]
+        private string _newPresetUsername = string.Empty;
+
+        [ObservableProperty]
+        private string _newPresetPassword = string.Empty;
+
+        [ObservableProperty]
+        private bool _isTesting;
+
+        [ObservableProperty]
+        private string _statusMessage = "代理配置就绪";
+
+        public string RulesSummaryText
+        {
+            get
+            {
+                int total = CountryRoutes.Count;
+                int direct = CountryRoutes.Count(r => r.IsDirect);
+                int proxy = total - direct;
+                return $"{total} 条分流规则 · {direct} 条直连 · {proxy} 条节点代理";
+            }
+        }
+
+        public string IccidRulesSummaryText
+        {
+            get
+            {
+                int direct = IccidRoutes.Count(route => route.IsDirect);
+                return $"{IccidRoutes.Count} 条 ICCID 规则 · {direct} 条直连 · {IccidRoutes.Count - direct} 条节点代理";
+            }
+        }
+
+        public string SelectedIccidText => SelectedIccidCard?.Iccid ?? "所有模块均未读取到 ICCID";
+        public string SelectedIccidImsiText
+        {
+            get
+            {
+                var card = SelectedIccidCard;
+                if (card?.Imsi is not { Length: >= 3 } imsi)
+                    return "当前 SIM 尚未读取 IMSI，无法推导国家；保存规则后插卡会自动补全。";
+
+                var meta = MccCountryHelper.FindByMcc(imsi[..3]);
+                var countryText = meta == null
+                    ? $"IMSI MCC {imsi[..3]} 未识别"
+                    : $"IMSI MCC {imsi[..3]} → {meta.Flag} {meta.Name} ({meta.Code})";
+                return $"{card.CardName} · {card.PhoneNumber} · {countryText} · ICCID 规则将覆盖其 MCC/PLMN";
+            }
+        }
+
+        public string NodePoolSummaryText
+        {
+            get
+            {
+                int total = ProxyPresets.Count;
+                int online = ProxyPresets.Count(p => p.LatencyMs.HasValue && p.LatencyMs.Value > 0);
+                int untested = ProxyPresets.Count(p => !p.LatencyMs.HasValue);
+                return $"已配置 {total} 个代理节点 · {online} 个已连通 · {untested} 个待测速";
+            }
+        }
+
+        public ProxyViewModel(IVoKernelService kernelService)
+        {
+            _kernelService = kernelService;
+            SelectedSlot = _kernelService.ActiveSlot ?? Slots.FirstOrDefault();
+            SelectedPreset = ProxyPresets.FirstOrDefault();
+            SelectedCountryRoute = CountryRoutes.FirstOrDefault();
+
+            SyncCountryRouteState(SelectedCountryRoute);
+
+            _allKnownCountries = MccCountryHelper.GetAllKnownCountries().ToList();
+            UpdateFilteredCountries(string.Empty);
+            SelectedCountryToAdd = FilteredAvailableCountries.FirstOrDefault();
+
+            _filteredCountryRoutesView = CollectionViewSource.GetDefaultView(CountryRoutes);
+            if (_filteredCountryRoutesView != null)
+            {
+                _filteredCountryRoutesView.Filter = FilterCountryRoute;
+            }
+
+            RefreshEgressOptions();
+            QuickAddSelectedEgress = AvailableEgressOptions.FirstOrDefault();
+            RefreshIccidCardOptions();
+            SyncIccidEditor();
+
+            IccidRoutes.CollectionChanged += (s, e) =>
+            {
+                UpdateSummaries();
+                SyncIccidEditor();
+            };
+
+            CountryRoutes.CollectionChanged += (s, e) =>
+            {
+                UpdateSummaries();
+                _filteredCountryRoutesView?.Refresh();
+            };
+
+            ProxyPresets.CollectionChanged += (s, e) =>
+            {
+                RefreshEgressOptions();
+                UpdateSummaries();
+            };
+
+            Slots.CollectionChanged += (s, e) => QueueIccidCardRefresh();
+            _kernelService.Kernel.SimStateChanged += (s, e) => QueueIccidCardRefresh();
+            _kernelService.Kernel.VoWifiStateChanged += (s, e) => QueueIccidCardRefresh();
+
+            _kernelService.EgressRoutesChanged += () =>
+            {
+                App.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    UpdateSummaries();
+                    SyncIccidEditor();
+                }));
+            };
+        }
+
+        public void UpdateSummaries()
+        {
+            OnPropertyChanged(nameof(RulesSummaryText));
+            OnPropertyChanged(nameof(IccidRulesSummaryText));
+            OnPropertyChanged(nameof(NodePoolSummaryText));
+        }
+
+        partial void OnSelectedIccidCardChanged(SimRouteCardOption? value)
+        {
+            OnPropertyChanged(nameof(SelectedIccidText));
+            OnPropertyChanged(nameof(SelectedIccidImsiText));
+            SyncIccidEditor();
+        }
+
+        private int _iccidCardRefreshVersion;
+
+        private void QueueIccidCardRefresh()
+        {
+            var version = Interlocked.Increment(ref _iccidCardRefreshVersion);
+            App.Current?.Dispatcher.BeginInvoke(new Action(RefreshIccidCardOptions));
+            SafeFire.Run(RefreshIccidCardsAfterIdentitySettlesAsync(version));
+        }
+
+        private async Task RefreshIccidCardsAfterIdentitySettlesAsync(int version)
+        {
+            await Task.Delay(500);
+            if (version != Volatile.Read(ref _iccidCardRefreshVersion)) return;
+            App.Current?.Dispatcher.BeginInvoke(new Action(RefreshIccidCardOptions));
+        }
+
+        private void RefreshIccidCardOptions()
+        {
+            var previousIccid = SelectedIccidCard?.Iccid;
+            var previousSlotId = SelectedIccidCard?.SlotId;
+            var cards = Slots
+                .Where(slot => !string.IsNullOrWhiteSpace(slot.Sim?.Iccid))
+                .Select(slot =>
+                {
+                    var sim = slot.Sim!;
+                    var operatorName = CarrierDisplayHelper.GetOperatorDisplay(sim);
+                    var cardName = !string.IsNullOrWhiteSpace(slot.CardNickname)
+                        ? slot.CardNickname!
+                        : CarrierDisplayHelper.BuildCardLabel(sim, sim.Iccid);
+                    return new SimRouteCardOption(
+                        slot.Id,
+                        slot.Name,
+                        sim.Iccid.Trim(),
+                        sim.Imsi,
+                        cardName,
+                        ResolveCardPhoneNumber(slot),
+                        operatorName);
+                })
+                .OrderBy(card => card.SlotName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            IccidCardOptions.Clear();
+            foreach (var card in cards) IccidCardOptions.Add(card);
+
+            // Preserve the actual card when possible. If that card disappeared
+            // during a switch, select the new card in the same module instead.
+            SelectedIccidCard = cards.FirstOrDefault(card =>
+                                    string.Equals(card.Iccid, previousIccid, StringComparison.Ordinal))
+                                ?? cards.FirstOrDefault(card =>
+                                    string.Equals(card.SlotId, previousSlotId, StringComparison.OrdinalIgnoreCase))
+                                ?? cards.FirstOrDefault();
+            OnPropertyChanged(nameof(SelectedIccidText));
+            OnPropertyChanged(nameof(SelectedIccidImsiText));
+        }
+
+        private static string ResolveCardPhoneNumber(ModemSlot slot)
+        {
+            var associatedUri = slot.VoWifiDiag?.Ims?.PAssociatedUri;
+            var number = CardDisplayNameResolver.ResolvePhoneNumber(slot.Sim, associatedUri);
+            return string.IsNullOrWhiteSpace(number) ? "号码未提供" : number!;
+        }
+
+        private bool _isSyncingIccidEditor;
+
+        private void SyncIccidEditor()
+        {
+            if (_isSyncingIccidEditor) return;
+            _isSyncingIccidEditor = true;
+            try
+            {
+                var iccid = SelectedIccidCard?.Iccid;
+                var rule = string.IsNullOrWhiteSpace(iccid)
+                    ? null
+                    : IccidRoutes.FirstOrDefault(candidate => string.Equals(candidate.Iccid, iccid, StringComparison.Ordinal));
+                SelectedIccidRoute = rule;
+
+                if (rule == null)
+                {
+                    SelectedIccidEgress = AvailableEgressOptions.FirstOrDefault();
+                }
+                else if (rule.IsDirect)
+                {
+                    SelectedIccidEgress = AvailableEgressOptions.FirstOrDefault(option => option.IsDirect);
+                }
+                else
+                {
+                    SelectedIccidEgress = AvailableEgressOptions.FirstOrDefault(option => option.NodeId == rule.ProxyNodeId)
+                        ?? AvailableEgressOptions.FirstOrDefault(option => option.IsDirect);
+                }
+            }
+            finally
+            {
+                _isSyncingIccidEditor = false;
+            }
+        }
+
+        [RelayCommand]
+        private void SaveIccidRule()
+        {
+            var card = SelectedIccidCard;
+            if (card == null || string.IsNullOrWhiteSpace(card.Iccid))
+            {
+                StatusMessage = "请先选择已经读取到 ICCID 的 SIM 卡。";
+                return;
+            }
+
+            var liveSlot = Slots.FirstOrDefault(slot =>
+                string.Equals(slot.Id, card.SlotId, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(slot.Sim?.Iccid, card.Iccid, StringComparison.Ordinal));
+            if (liveSlot == null)
+            {
+                RefreshIccidCardOptions();
+                StatusMessage = "所选模块刚刚完成切卡，旧 ICCID 已失效；请确认新卡后再保存。";
+                return;
+            }
+
+            var selected = SelectedIccidEgress ?? AvailableEgressOptions.FirstOrDefault();
+            _kernelService.SaveIccidRoute(
+                card.Iccid,
+                selected?.NodeId,
+                card.CardName,
+                card.Imsi,
+                card.PhoneNumber == "号码未提供" ? null : card.PhoneNumber);
+            SelectedIccidRoute = IccidRoutes.FirstOrDefault(route => route.Iccid == card.Iccid);
+            StatusMessage = $"已为 [{card.CardName} · {card.PhoneNumber}] 保存 ICCID 规则：{selected?.DisplayName ?? "直连模式 (DIRECT)"}。";
+            UpdateSummaries();
+        }
+
+        [RelayCommand]
+        private async Task DeleteIccidRuleAsync(IccidRouteModel? route = null)
+        {
+            var target = route ?? SelectedIccidRoute;
+            if (target == null)
+            {
+                StatusMessage = "请选择要删除的 ICCID 规则。";
+                return;
+            }
+
+            var box = new Wpf.Ui.Controls.MessageBox
+            {
+                Title = "确认删除 ICCID 分流规则",
+                Content = $"删除 ICCID [{target.Iccid}] 的最高优先级规则后，这张卡将改为使用 IMSI MCC/PLMN 国家规则。",
+                PrimaryButtonText = "删除",
+                CloseButtonText = "取消"
+            };
+            if (await box.ShowDialogAsync() != Wpf.Ui.Controls.MessageBoxResult.Primary) return;
+
+            _kernelService.RemoveIccidRoute(target.Iccid);
+            StatusMessage = $"已删除 ICCID [{target.Iccid}] 规则；现在跟随 IMSI MCC/PLMN。";
+            SyncIccidEditor();
+        }
+
+        private bool _isSyncingRouteState;
+
+        partial void OnSelectedCountryRouteChanged(CountryRouteModel? value)
+        {
+            SyncCountryRouteState(value);
+        }
+
+        private void SyncCountryRouteState(CountryRouteModel? route)
+        {
+            _isSyncingRouteState = true;
+            try
+            {
+                if (route == null)
+                {
+                    IsDirectRoute = true;
+                    IsProxyRoute = false;
+                    SelectedNodeForCountry = null;
+                }
+                else
+                {
+                    if (route.IsDirect)
+                    {
+                        IsDirectRoute = true;
+                        IsProxyRoute = false;
+                        SelectedNodeForCountry = ProxyPresets.FirstOrDefault();
+                    }
+                    else
+                    {
+                        IsDirectRoute = false;
+                        IsProxyRoute = true;
+                        SelectedNodeForCountry = ProxyPresets.FirstOrDefault(p => p.Id == route.ProxyNodeId) ?? ProxyPresets.FirstOrDefault();
+                    }
+                }
+                HasRouteChanges = false;
+            }
+            finally
+            {
+                _isSyncingRouteState = false;
+            }
+        }
+
+        partial void OnIsDirectRouteChanged(bool value)
+        {
+            if (_isSyncingRouteState) return;
+            if (value)
+            {
+                IsProxyRoute = false;
+            }
+            CheckRouteChanges();
+        }
+
+        partial void OnIsProxyRouteChanged(bool value)
+        {
+            if (_isSyncingRouteState) return;
+            if (value)
+            {
+                IsDirectRoute = false;
+                if (SelectedNodeForCountry == null)
+                {
+                    SelectedNodeForCountry = ProxyPresets.FirstOrDefault();
+                }
+            }
+            CheckRouteChanges();
+        }
+
+        partial void OnSelectedNodeForCountryChanged(ProxyNodeModel? value)
+        {
+            if (_isSyncingRouteState) return;
+            CheckRouteChanges();
+        }
+
+        private void CheckRouteChanges()
+        {
+            if (SelectedCountryRoute == null)
+            {
+                HasRouteChanges = false;
+                return;
+            }
+
+            if (IsDirectRoute)
+            {
+                HasRouteChanges = !SelectedCountryRoute.IsDirect;
+            }
+            else
+            {
+                HasRouteChanges = SelectedCountryRoute.IsDirect || SelectedCountryRoute.ProxyNodeId != SelectedNodeForCountry?.Id;
+            }
+        }
+
+        partial void OnNewCountryCodeChanged(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                DetectedCountryHint = "请输入 2 位 ISO 国家代码 (例如: DE, FR, JP, US, CA, AU)";
+                return;
+            }
+
+            var code = value.Trim().ToUpperInvariant();
+            var meta = Helpers.MccCountryHelper.FindByCode(code);
+            if (meta == null)
+            {
+                DetectedCountryHint = $"未在数据库中找到代码 [{code}] 对应的国家";
+            }
+            else
+            {
+                bool exists = CountryRoutes.Any(r => string.Equals(r.CountryCode, meta.Code, StringComparison.OrdinalIgnoreCase));
+                if (exists)
+                {
+                    DetectedCountryHint = $"{meta.Flag} {meta.Name} ({meta.Code}) · 已存在分流规则";
+                }
+                else
+                {
+                    DetectedCountryHint = $"{meta.Flag} {meta.Name} ({meta.Code}) · MCC: {string.Join(", ", meta.Mccs)} · 可添加";
+                }
+            }
+        }
+
+        [RelayCommand]
+        private void SaveCountryRouteChanges()
+        {
+            if (SelectedCountryRoute == null) return;
+
+            if (IsDirectRoute || SelectedNodeForCountry == null)
+            {
+                _kernelService.SaveCountryRoute(SelectedCountryRoute.CountryCode, null);
+                SelectedCountryRoute.ProxyNodeId = null;
+                SelectedCountryRoute.ProxyNodeName = "直连模式 (Direct)";
+                StatusMessage = $"已将 [{SelectedCountryRoute.CountryName}] 设置为直连模式。";
+            }
+            else
+            {
+                _kernelService.SaveCountryRoute(SelectedCountryRoute.CountryCode, SelectedNodeForCountry.Id);
+                SelectedCountryRoute.ProxyNodeId = SelectedNodeForCountry.Id;
+                SelectedCountryRoute.ProxyNodeName = SelectedNodeForCountry.Name;
+                StatusMessage = $"已将 [{SelectedCountryRoute.CountryName}] 绑定出站代理至 [{SelectedNodeForCountry.Name}]。";
+            }
+
+            HasRouteChanges = false;
+            UpdateSummaries();
+        }
+
+        [RelayCommand]
+        private void AddCountryRule()
+        {
+            if (string.IsNullOrWhiteSpace(NewCountryCode))
+            {
+                StatusMessage = "请输入 2 位国家代码 (例如: DE, FR, AU, CA, MY)...";
+                return;
+            }
+
+            var meta = Helpers.MccCountryHelper.FindByCode(NewCountryCode.Trim());
+            if (meta == null)
+            {
+                StatusMessage = $"未找到代码 [{NewCountryCode}] 的国家电信元数据。";
+                return;
+            }
+
+            if (CountryRoutes.Any(r => string.Equals(r.CountryCode, meta.Code, StringComparison.OrdinalIgnoreCase)))
+            {
+                StatusMessage = $"规则 [{meta.Name}] 已存在，请直接在列表中查看。";
+                SelectedCountryRoute = CountryRoutes.FirstOrDefault(r => string.Equals(r.CountryCode, meta.Code, StringComparison.OrdinalIgnoreCase));
+                return;
+            }
+
+            var targetNodeId = IsProxyRoute ? SelectedNodeForCountry?.Id : null;
+            _kernelService.SaveCountryRoute(meta.Code, targetNodeId);
+            NewCountryCode = string.Empty;
+            SelectedCountryRoute = CountryRoutes.FirstOrDefault(r => string.Equals(r.CountryCode, meta.Code, StringComparison.OrdinalIgnoreCase));
+            StatusMessage = $"成功添加 [{meta.Name}] 国家分流规则！";
+            UpdateSummaries();
+        }
+
+        public void RefreshEgressOptions()
+        {
+            var prevSelectedId = QuickAddSelectedEgress?.NodeId;
+            var previousIccidNodeId = SelectedIccidEgress?.NodeId;
+            AvailableEgressOptions.Clear();
+            AvailableEgressOptions.Add(new EgressOptionModel(null, "直连模式 (DIRECT)"));
+            foreach (var preset in ProxyPresets)
+            {
+                AvailableEgressOptions.Add(new EgressOptionModel(preset.Id, $"代理 · {preset.Name}"));
+            }
+
+            QuickAddSelectedEgress = AvailableEgressOptions.FirstOrDefault(o => o.NodeId == prevSelectedId)
+                                     ?? AvailableEgressOptions.FirstOrDefault();
+            SelectedIccidEgress = AvailableEgressOptions.FirstOrDefault(option => option.NodeId == previousIccidNodeId)
+                ?? AvailableEgressOptions.FirstOrDefault();
+            SyncIccidEditor();
+        }
+
+        private bool FilterCountryRoute(object item)
+        {
+            if (item is not CountryRouteModel route) return false;
+            if (string.IsNullOrWhiteSpace(RulesSearchQuery)) return true;
+
+            var q = RulesSearchQuery.Trim();
+            return route.CountryName.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                   route.CountryCode.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                   route.ProxyNodeName.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                   route.MccDisplay.Contains(q, StringComparison.OrdinalIgnoreCase);
+        }
+
+        partial void OnRulesSearchQueryChanged(string value)
+        {
+            _filteredCountryRoutesView?.Refresh();
+            OnPropertyChanged(nameof(RulesSummaryText));
+        }
+
+        partial void OnCountrySearchQueryChanged(string value)
+        {
+            UpdateFilteredCountries(value);
+        }
+
+        private void UpdateFilteredCountries(string? query)
+        {
+            FilteredAvailableCountries.Clear();
+            var q = query?.Trim().ToLowerInvariant() ?? string.Empty;
+            foreach (var country in _allKnownCountries)
+            {
+                if (string.IsNullOrEmpty(q) ||
+                    country.Name.ToLowerInvariant().Contains(q) ||
+                    country.Code.ToLowerInvariant().Contains(q) ||
+                    country.Mccs.Any(m => m.Contains(q)))
+                {
+                    FilteredAvailableCountries.Add(country);
+                }
+            }
+
+            if (!string.IsNullOrEmpty(q))
+            {
+                var exact = FilteredAvailableCountries.FirstOrDefault(c =>
+                    string.Equals(c.Code, q, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(c.Name, q, StringComparison.OrdinalIgnoreCase));
+                if (exact != null)
+                {
+                    SelectedCountryToAdd = exact;
+                }
+            }
+
+            UpdateQuickAddHint();
+        }
+
+        partial void OnSelectedCountryToAddChanged(CountryMeta? value)
+        {
+            UpdateQuickAddHint();
+        }
+
+        private void UpdateQuickAddHint()
+        {
+            if (SelectedCountryToAdd == null)
+            {
+                QuickAddHintText = "请在上方下拉列表中选择国家/地区，或直接输入国家名/代码进行搜索。";
+                return;
+            }
+
+            bool exists = CountryRoutes.Any(r => string.Equals(r.CountryCode, SelectedCountryToAdd.Code, StringComparison.OrdinalIgnoreCase));
+            if (exists)
+            {
+                QuickAddHintText = $"{SelectedCountryToAdd.Flag} {SelectedCountryToAdd.Name} ({SelectedCountryToAdd.Code}) · MCC: {string.Join(", ", SelectedCountryToAdd.Mccs)} · ⚠️ 该国家规则已存在 (可直接在列表中编辑)";
+            }
+            else
+            {
+                QuickAddHintText = $"{SelectedCountryToAdd.Flag} {SelectedCountryToAdd.Name} ({SelectedCountryToAdd.Code}) · 自动关联 MCC: {string.Join(", ", SelectedCountryToAdd.Mccs)} · ✓ 点击右侧按钮即可添加";
+            }
+        }
+
+        partial void OnEditDialogIsDirectChanged(bool value)
+        {
+            if (_isSyncingRouteState) return;
+            if (value)
+            {
+                EditDialogIsProxy = false;
+            }
+        }
+
+        partial void OnEditDialogIsProxyChanged(bool value)
+        {
+            if (_isSyncingRouteState) return;
+            if (value)
+            {
+                EditDialogIsDirect = false;
+                if (EditDialogSelectedNode == null)
+                {
+                    EditDialogSelectedNode = ProxyPresets.FirstOrDefault();
+                }
+            }
+        }
+
+        [RelayCommand]
+        private void OpenEditDialog(CountryRouteModel? route)
+        {
+            var target = route ?? SelectedCountryRoute;
+            if (target == null) return;
+
+            EditingRoute = target;
+            SelectedCountryRoute = target;
+
+            _isSyncingRouteState = true;
+            try
+            {
+                if (target.IsDirect)
+                {
+                    EditDialogIsDirect = true;
+                    EditDialogIsProxy = false;
+                    EditDialogSelectedNode = ProxyPresets.FirstOrDefault();
+                }
+                else
+                {
+                    EditDialogIsDirect = false;
+                    EditDialogIsProxy = true;
+                    EditDialogSelectedNode = ProxyPresets.FirstOrDefault(p => p.Id == target.ProxyNodeId) ?? ProxyPresets.FirstOrDefault();
+                }
+            }
+            finally
+            {
+                _isSyncingRouteState = false;
+            }
+
+            IsEditingRoute = true;
+        }
+
+        [RelayCommand]
+        private void CloseEditDialog()
+        {
+            IsEditingRoute = false;
+            EditingRoute = null;
+        }
+
+        [RelayCommand]
+        private void SaveEditDialog()
+        {
+            if (EditingRoute == null)
+            {
+                IsEditingRoute = false;
+                return;
+            }
+
+            if (EditDialogIsDirect || EditDialogSelectedNode == null)
+            {
+                _kernelService.SaveCountryRoute(EditingRoute.CountryCode, null);
+                EditingRoute.ProxyNodeId = null;
+                EditingRoute.ProxyNodeName = "直连模式 (Direct)";
+                StatusMessage = $"已将 [{EditingRoute.CountryName}] 设置为直连模式。";
+            }
+            else
+            {
+                _kernelService.SaveCountryRoute(EditingRoute.CountryCode, EditDialogSelectedNode.Id);
+                EditingRoute.ProxyNodeId = EditDialogSelectedNode.Id;
+                EditingRoute.ProxyNodeName = EditDialogSelectedNode.Name;
+                StatusMessage = $"已将 [{EditingRoute.CountryName}] 绑定出站代理至 [{EditDialogSelectedNode.Name}]。";
+            }
+
+            IsEditingRoute = false;
+            UpdateSummaries();
+            _filteredCountryRoutesView?.Refresh();
+        }
+
+        [RelayCommand]
+        private void QuickAddCountryRule()
+        {
+            var target = SelectedCountryToAdd;
+            if (target == null && !string.IsNullOrWhiteSpace(CountrySearchQuery))
+            {
+                target = MccCountryHelper.FindByCode(CountrySearchQuery.Trim()) ??
+                         _allKnownCountries.FirstOrDefault(c => c.Name.Equals(CountrySearchQuery.Trim(), StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (target == null)
+            {
+                StatusMessage = "请先选择或搜索要添加的国家/地区。";
+                return;
+            }
+
+            if (CountryRoutes.Any(r => string.Equals(r.CountryCode, target.Code, StringComparison.OrdinalIgnoreCase)))
+            {
+                var existing = CountryRoutes.FirstOrDefault(r => string.Equals(r.CountryCode, target.Code, StringComparison.OrdinalIgnoreCase));
+                SelectedCountryRoute = existing;
+                StatusMessage = $"[{target.Name}] 分流规则已存在，已为您高亮定位。";
+                return;
+            }
+
+            string? targetNodeId = QuickAddSelectedEgress?.IsDirect == false ? QuickAddSelectedEgress.NodeId : null;
+            _kernelService.SaveCountryRoute(target.Code, targetNodeId);
+
+            var newRoute = CountryRoutes.FirstOrDefault(r => string.Equals(r.CountryCode, target.Code, StringComparison.OrdinalIgnoreCase));
+            if (newRoute != null)
+            {
+                SelectedCountryRoute = newRoute;
+            }
+
+            string egressTitle = QuickAddSelectedEgress?.DisplayName ?? "直连模式";
+            StatusMessage = $"已成功添加 [{target.Flag} {target.Name} ({target.Code})] 出站分流规则（{egressTitle}）！";
+
+            CountrySearchQuery = string.Empty;
+            UpdateFilteredCountries(string.Empty);
+            UpdateSummaries();
+            _filteredCountryRoutesView?.Refresh();
+        }
+
+        [RelayCommand]
+        private async Task DeleteCountryRuleAsync(CountryRouteModel? route = null)
+        {
+            var target = route ?? EditingRoute ?? SelectedCountryRoute;
+            if (target == null)
+            {
+                StatusMessage = "请先在列表中选择要删除的国家分流规则。";
+                return;
+            }
+
+            var uiMessageBox = new Wpf.Ui.Controls.MessageBox
+            {
+                Title = "确认删除分流规则",
+                Content = $"确定要删除国家分流规则 [{target.CountryName} ({target.CountryCode})] 吗？\n删除后该国家/地区出站将自动回退到直连模式。",
+                PrimaryButtonText = "删除",
+                CloseButtonText = "取消"
+            };
+
+            var result = await uiMessageBox.ShowDialogAsync();
+            if (result != Wpf.Ui.Controls.MessageBoxResult.Primary)
+            {
+                return;
+            }
+
+            _kernelService.RemoveCountryRoute(target.CountryCode);
+            StatusMessage = $"已删除国家分流规则 [{target.CountryName}] ({target.CountryCode})。";
+
+            if (EditingRoute == target)
+            {
+                IsEditingRoute = false;
+                EditingRoute = null;
+            }
+
+            if (SelectedCountryRoute == target)
+            {
+                SelectedCountryRoute = CountryRoutes.FirstOrDefault();
+            }
+
+            UpdateSummaries();
+            _filteredCountryRoutesView?.Refresh();
+        }
+
+        [RelayCommand]
+        private void AddPreset()
+        {
+            if (string.IsNullOrWhiteSpace(NewPresetUrl)) return;
+            var url = NewPresetUrl.Trim();
+            if (!IsSupportedSocks5Proxy(url))
+            {
+                StatusMessage = "只能导入 socks://、socks5:// 或 socks5h:// 节点；HTTP/HTTPS 不支持 VoWiFi。";
+                return;
+            }
+            var node = ProxyNodeModel.FromUrl(url);
+            _kernelService.AddProxyPreset(node);
+            NewPresetUrl = string.Empty;
+            SelectedPreset = node;
+            StatusMessage = $"已添加节点 [{node.Name}]。";
+            UpdateSummaries();
+        }
+
+        [RelayCommand]
+        private async Task DeletePresetAsync(ProxyNodeModel? preset)
+        {
+            var p = preset ?? SelectedPreset;
+            if (p == null) return;
+
+            var uiMessageBox = new Wpf.Ui.Controls.MessageBox
+            {
+                Title = "确认移除代理节点",
+                Content = $"确定要从代理池中移除节点 [{p.Name}] ({p.Url}) 吗？\n引用此节点的 ICCID 或国家规则将显示节点缺失并安全使用直连。",
+                PrimaryButtonText = "移除",
+                CloseButtonText = "取消"
+            };
+
+            var result = await uiMessageBox.ShowDialogAsync();
+            if (result != Wpf.Ui.Controls.MessageBoxResult.Primary) return;
+
+            _kernelService.RemoveProxyPreset(p.Id);
+            SelectedPreset = ProxyPresets.FirstOrDefault();
+            StatusMessage = $"已删除代理节点 [{p.Name}]。";
+            UpdateSummaries();
+        }
+
+        [RelayCommand]
+        private async Task TestPresetLatencyAsync(ProxyNodeModel? preset)
+        {
+            var p = preset ?? SelectedPreset;
+            if (p == null || IsTesting) return;
+
+            IsTesting = true;
+            StatusMessage = $"正在测试代理 {p.Name} ({p.Host}:{p.Port}) 连通性...";
+
+            try
+            {
+                int ms = await _kernelService.TestProxyConnectivityAsync(p);
+                StatusMessage = ms >= 0
+                    ? $"代理 [{p.Name}] 连通正常，握手延迟: {ms} ms。"
+                    : $"代理 [{p.Name}] 检测未通过：{p.Status}";
+                UpdateSummaries();
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"代理测试失败: {ex.Message}";
+            }
+            finally
+            {
+                IsTesting = false;
+            }
+        }
+
+        [RelayCommand]
+        private async Task TestAllPresetsAsync()
+        {
+            if (IsTesting) return;
+            IsTesting = true;
+            StatusMessage = "正在批量测速所有预设代理节点...";
+
+            try
+            {
+                var presets = ProxyPresets.ToArray();
+                using var concurrency = new SemaphoreSlim(4);
+                await Task.WhenAll(presets.Select(async preset =>
+                {
+                    await concurrency.WaitAsync();
+                    try
+                    {
+                        await _kernelService.TestProxyConnectivityAsync(preset);
+                    }
+                    finally
+                    {
+                        concurrency.Release();
+                    }
+                }));
+                StatusMessage = "全部预设节点测速完毕。";
+                UpdateSummaries();
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"批量测速未完成: {ex.Message}";
+            }
+            finally
+            {
+                IsTesting = false;
+            }
+        }
+
+        [RelayCommand]
+        private void AddNewPreset()
+        {
+            if (string.IsNullOrWhiteSpace(NewPresetHost) || NewPresetPort <= 0)
+            {
+                StatusMessage = "请填写完整的主机地址与有效端口。";
+                return;
+            }
+            if (!NewPresetProtocol.Equals("socks", StringComparison.OrdinalIgnoreCase) &&
+                !NewPresetProtocol.Equals("socks5", StringComparison.OrdinalIgnoreCase) &&
+                !NewPresetProtocol.Equals("socks5h", StringComparison.OrdinalIgnoreCase))
+            {
+                StatusMessage = "VoWiFi 节点协议只能是 socks、socks5 或 socks5h。";
+                return;
+            }
+
+            var node = new ProxyNodeModel
+            {
+                Name = string.IsNullOrWhiteSpace(NewPresetName) ? $"{NewPresetHost}:{NewPresetPort}" : NewPresetName.Trim(),
+                Protocol = NewPresetProtocol,
+                Host = NewPresetHost.Trim(),
+                Port = NewPresetPort,
+                Username = string.IsNullOrWhiteSpace(NewPresetUsername) ? null : NewPresetUsername.Trim(),
+                Password = string.IsNullOrWhiteSpace(NewPresetPassword) ? null : NewPresetPassword.Trim()
+            };
+
+            _kernelService.AddProxyPreset(node);
+            SelectedPreset = node;
+            StatusMessage = $"新代理预设 [{node.Name}] 已添加。";
+            UpdateSummaries();
+        }
+
+        [RelayCommand]
+        private async Task RemovePresetAsync(ProxyNodeModel? preset) => await DeletePresetAsync(preset);
+
+        private static bool IsSupportedSocks5Proxy(string value) =>
+            Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+            (uri.Scheme.Equals("socks", StringComparison.OrdinalIgnoreCase) ||
+             uri.Scheme.Equals("socks5", StringComparison.OrdinalIgnoreCase) ||
+             uri.Scheme.Equals("socks5h", StringComparison.OrdinalIgnoreCase)) &&
+            !string.IsNullOrWhiteSpace(uri.Host) && uri.Port is > 0 and <= 65535;
+    }
+}

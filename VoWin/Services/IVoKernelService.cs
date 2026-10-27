@@ -1,0 +1,131 @@
+using System.Collections.ObjectModel;
+using VoSharp.Euicc.Models;
+using VoSharp.Kernel;
+using VoSharp.Kernel.Pool;
+using VoSharp.Kernel.SipGateway;
+using VoSharp.Modem;
+using VoSharp.Modem.At;
+using VoSharp.Sim;
+using VoSharp.StateMachine;
+using VoSharp.Telephony.Calls;
+using VoSharp.Telephony.Sms;
+using VoSharp.Telephony.VoWifi;
+using VoWin.Models;
+
+namespace VoWin.Services
+{
+    public interface IVoKernelService : IAsyncDisposable
+    {
+        IVoKernel Kernel { get; }
+
+        ObservableCollection<ModemSlot> Slots { get; }
+        ModemSlot? ActiveSlot { get; }
+        ObservableCollection<SmsConversationModel> Conversations { get; }
+        ObservableCollection<CallRecordModel> CallHistory { get; }
+        ObservableCollection<ProxyNodeModel> ProxyPresets { get; }
+        ObservableCollection<IccidRouteModel> IccidRoutes { get; }
+        ObservableCollection<LogEntryModel> Logs { get; }
+        bool IsInitialScanRunning { get; }
+        string InitialScanStatus { get; }
+
+        IPreferenceDatabaseService Preferences { get; }
+        void OnUsbDeviceInserted();
+        void OnUsbDeviceRemoved();
+        Task ApplyPreferencesToSlotAsync(ModemSlot slot);
+        Task SaveModulePreferencesAsync(string slotId, bool flightMode, bool vowifi, bool cellularData, bool roaming, string? proxyUrl, string? customName = null, VoSharp.Sim.DeviceProfile? deviceProfile = null);
+        Task SaveSimPreferencesAsync(string iccid, bool flightMode, bool vowifi, bool cellularData, bool roaming, string? proxyUrl, string? nickname, string? customEpdg = null);
+
+        // Telemetry
+        TelephonyState StateMachineState { get; }
+        SignalQuality? CurrentSignal { get; }
+        NetworkRegistration? CurrentRegistration { get; }
+        SimIdentity? CurrentSim { get; }
+        VoWifiDiagnosticInfo? VoWifiDiag { get; }
+        CallSession? ActiveCall { get; }
+        CallState CurrentCallState { get; }
+        string? CurrentCallNumber { get; }
+        bool HasIncomingCall { get; }
+        string? IncomingCallerNumber { get; }
+        bool IsPresentedCallEvent(string callId);
+        event Action<string>? CallMediaStatusChanged;
+        event Action<SmsMessageModel>? IncomingSmsReceived;
+        event Action<string, string?>? IncomingCallReceived;
+        event Action? EgressRoutesChanged;
+
+        /// <summary>
+        /// 一次完整的 eUICC 探测结束后触发（槽位 ID + 探测结果）。
+        /// 供界面在「非界面发起的探测」后同步 Profile 列表，例如托盘热键切卡、
+        /// 卡槽从 SIM REFRESH 恢复。没有这个事件时，热键切完卡界面会一直显示旧状态。
+        /// </summary>
+        event Action<string, EuiccProbeResult>? EuiccProbeCompleted;
+        Task<CallExperienceSettings> GetCallExperienceSettingsAsync();
+        Task SaveCallExperienceSettingsAsync(CallExperienceSettings settings);
+        SipGatewayStatus? GetSipGatewayStatus();
+        Task StartSipGatewayAsync(SipGatewayOptions options, CancellationToken cancellationToken = default);
+        Task StopSipGatewayAsync();
+
+        // Operations
+        Task InitializeAsync();
+        Task<IReadOnlyList<ModemSlot>> DiscoverSlotsAsync();
+        Task<ModemSlot?> AddSlotAsync(string portName, int baudRate = 115200, string? name = null, string? proxyUrl = null);
+        Task<bool> RemoveSlotAsync(string slotId);
+        bool SelectSlot(string slotId);
+        Task RefreshMetricsAsync(string? slotId = null);
+        Task<SimIdentity?> RefreshSimAsync(string? slotId = null);
+        Task<string> ExecuteAtCommandAsync(string command, string? slotId = null);
+        Task<string> SendUssdAsync(string code, string? slotId = null);
+        Task<bool> SetFlightModeAsync(bool enable, string? slotId = null);
+        Task<bool> RebootModemAsync(string? slotId = null);
+        Task<(bool Success, long RttMs, string Status)> ProbeVoWifiLivenessAsync(string? slotId = null);
+        Task<HostImsProbeResult> ProbeHostImsAsync(string? slotId = null, CancellationToken cancellationToken = default);
+        HostImsRegistrationStatus GetHostImsRegistrationStatus(string? slotId = null);
+        Task<HostImsRegistrationStatus> StartHostImsRegistrationAsync(
+            string? slotId = null, HostImsEndpointCandidate? endpoint = null, CancellationToken cancellationToken = default);
+        Task StopHostImsRegistrationAsync(string? slotId = null);
+
+        // Calls
+        Task<CallInfo> DialAsync(string number, string? slotId = null, bool forceCellular = false);
+        Task<CallInfo?> HangupAsync(string? slotId = null);
+        Task<CallInfo?> AnswerAsync(string? slotId = null);
+        Task<CallInfo?> RejectAsync(string? slotId = null);
+        Task<bool> SendDtmfAsync(char digit, string? slotId = null);
+
+        // SMS
+        Task<SmsSubmitResult> SendSmsAsync(string recipient, string text, bool requestStatusReport = true, string? slotId = null, bool forceVowifi = false, bool forceCellular = false);
+        void DeleteConversation(string contactNumber);
+        void ClearConversation(string contactNumber);
+        void DeleteMessage(string conversationNumber, string messageId);
+        Task SyncModemSmsAsync(ModemSlot slot, CancellationToken cancellationToken = default);
+        void ClearCallHistory();
+        void DeleteCallRecord(string id);
+
+        // VoWiFi
+        Task<bool> StartVoWifiAsync(string? slotId = null);
+        Task<bool> StopVoWifiAsync(string? slotId = null);
+        Task<string> BuildImsDiagnosticReportAsync(string? slotId = null);
+
+        // eSIM / eUICC
+        Task<EuiccProbeResult> ProbeEuiccAsync(string? slotId = null, CancellationToken cancellationToken = default);
+        Task<IReadOnlyList<Profile>> GetEuiccProfilesAsync(string? slotId = null);
+        Task<bool> SwitchEuiccProfileAsync(string iccidOrAid, string? slotId = null, string? euiccAid = null, IProgress<ProfileSwitchProgress>? progress = null);
+        Task<bool> DisableEuiccProfileAsync(string iccidOrAid, string? slotId = null, string? euiccAid = null);
+        Task<bool> DeleteEuiccProfileAsync(string iccidOrAid, string? slotId = null, string? euiccAid = null);
+        Task<bool> RenameEuiccProfileAsync(string iccidOrAid, string nickname, string? slotId = null, string? euiccAid = null);
+        Task<string> GetEuiccEidAsync(string? slotId = null);
+        Task<EuiccDownloadResult> DownloadEuiccProfileAsync(string activationCode, string? confirmationCode = null, IProgress<EuiccDownloadProgress>? progress = null, string? slotId = null, CancellationToken cancellationToken = default, bool allowUntrustedTls = false, bool allowRetryAfterUncertain = false, string? euiccAid = null);
+
+        // Proxy & Country Dispatch Routing
+        bool SetSlotProxy(string slotId, string? proxyUrl);
+        Task<int> TestProxyConnectivityAsync(ProxyNodeModel node, string targetHost = "8.8.8.8", int targetPort = 53);
+        void AddProxyPreset(ProxyNodeModel node);
+        void RemoveProxyPreset(string nodeId);
+
+        ObservableCollection<CountryRouteModel> CountryRoutes { get; }
+        void SaveIccidRoute(string iccid, string? proxyNodeId, string? cardName = null, string? imsi = null, string? phoneNumber = null);
+        void RemoveIccidRoute(string iccid);
+        void SaveCountryRoute(string countryCode, string? proxyNodeId);
+        void RemoveCountryRoute(string countryCode);
+        string? ResolveEgressProxyForSlot(string slotId);
+        Task<VoWifiRouteDecision> ResolveVoWifiRouteAsync(string? slotId = null);
+    }
+}
